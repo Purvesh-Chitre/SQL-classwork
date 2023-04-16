@@ -1,0 +1,647 @@
+USE invest;
+
+/*
+Author: Franco Tomas Yakasovic Queirolo
+Co-author: Panagiota Tsoroni
+Co-author: Carla Wittler
+Co-author: Purvesh Chitre
+*/
+
+# Q1 - MOST RECENT 12M, 18M, 24M RETURNS FOR EACH SECURITY
+/*
+We calculated the returns for each security using the date_sub function so that we can get 
+ the interval for  12M, 18M and 24M.
+We used the formula (P1-P0)/P0 in each case.
+As discussed in class we are using the pricing database with the adjusted pricing.
+We take the security name from the securities masterlist table.
+*/
+
+CREATE VIEW invest.Team3_pastreturns_dd AS
+
+SELECT	adjpr.ticker, secdetails.security_name
+		    ,FORMAT((adjpr.value - adjpr12m.value) / adjpr12m.value, 4) AS P12M_Return
+			,FORMAT((adjpr.value - adjpr18m.value) / adjpr18m.value, 4) AS P18M_Return
+			,FORMAT((adjpr.value - adjpr24m.value) / adjpr24m.value, 4) AS P24M_Return
+  FROM
+			(
+			SELECT	*
+			  FROM	invest.pricing_daily_new
+			 WHERE	DATE = '2022-09-09'
+			 			AND price_type = 'Adjusted'
+			) AS adjpr
+  LEFT
+  JOIN	invest.pricing_daily_new AS adjpr12m
+	 ON	adjpr.ticker = adjpr12m.ticker
+			AND adjpr12m.DATE = DATE_SUB('2022-09-09', INTERVAL 365 DAY) 
+			AND adjpr12m.price_type = 'Adjusted'
+  LEFT
+  JOIN	invest.pricing_daily_new AS adjpr18m
+  	 ON	adjpr.ticker = adjpr18m.ticker
+			AND adjpr18m.DATE = DATE_SUB('2022-09-09', INTERVAL 18 MONTH) 
+			AND adjpr18m.price_type = 'Adjusted'
+  LEFT
+  JOIN	invest.pricing_daily_new AS adjpr24m
+  	 ON	adjpr.ticker = adjpr24m.ticker
+			AND adjpr24m.DATE = DATE_SUB('2022-09-09', INTERVAL 24 MONTH) 
+			AND adjpr24m.price_type = 'Adjusted'
+            
+  LEFT
+  JOIN	invest.security_masterlist AS secdetails
+  	 ON	adjpr.ticker = secdetails.ticker
+     GROUP BY ticker, P12M_Return, P18M_Return, P24M_Return, adjpr.ticker, secdetails.security_name
+            having P12M_Return IS NOT NULL
+            AND P18M_Return IS NOT NULL
+            AND P24M_Return IS NOT NULL
+            Order by P24M_Return DESC
+;
+
+# Q2 & Q3 - DAILY RETURNS TO GET YEARLY SIGMAS
+/*
+We start by calculating the daily returns for each security so that we can get the risk or 
+ volatility for the most recent 12M.
+Using the formula (P1-P0)/P0 and the lag function for one period (daily).
+*/
+
+CREATE VIEW invest.Team3_dailyreturns_dd AS 
+SELECT a.date, a.ticker, a.value, a.lagged_price, a.price_type,
+(a.value - a.lagged_price)/a.lagged_price AS daily_returns
+FROM
+(SELECT *, lag(value, 1) OVER (partition by ticker order by date) as lagged_price
+FROM invest.pricing_daily_new
+WHERE price_type = 'Adjusted' AND date > '2019-09-09'
+) a
+;
+
+# BENCHMARK TABLE - SP500 ETF
+/*
+We repeat the same process for the benchmark (SP500 ETF). 
+So that we can compare our securities returns with a proxy from the market.
+*/
+
+CREATE VIEW invest.Team3_new_benchmark_dd AS
+SELECT	adjpr.ticker, secdetails.security_name
+		    ,FORMAT((adjpr.value - adjpr12m.value) / adjpr12m.value, 4) AS P12M_Return
+			,FORMAT((adjpr.value - adjpr18m.value) / adjpr18m.value, 4) AS P18M_Return
+			,FORMAT((adjpr.value - adjpr24m.value) / adjpr24m.value, 4) AS P24M_Return
+  FROM
+			(
+			SELECT	*
+			  FROM	pricing_daily_new
+			 WHERE	DATE = '2022-09-09'
+			 			AND price_type = 'Adjusted'
+			) AS adjpr
+  LEFT
+  JOIN	invest.pricing_daily_new AS adjpr12m
+	 ON	adjpr.ticker = adjpr12m.ticker
+			AND adjpr12m.DATE = DATE_SUB('2022-09-09', INTERVAL 365 DAY) 
+			AND adjpr12m.price_type = 'Adjusted'
+  LEFT
+  JOIN	invest.pricing_daily_new AS adjpr18m
+  	 ON	adjpr.ticker = adjpr18m.ticker
+			AND adjpr18m.DATE = DATE_SUB('2022-09-09', INTERVAL 18 MONTH) 
+			AND adjpr18m.price_type = 'Adjusted'
+  LEFT
+  JOIN	invest.pricing_daily_new AS adjpr24m
+  	 ON	adjpr.ticker = adjpr24m.ticker
+			AND adjpr24m.DATE = DATE_SUB('2022-09-09', INTERVAL 24 MONTH) 
+			AND adjpr24m.price_type = 'Adjusted'
+            
+	LEFT
+  JOIN	invest.security_masterlist AS secdetails
+  	 ON	adjpr.ticker = secdetails.ticker
+     Group by ticker, P12M_Return, P18M_Return, P24M_Return, adjpr.ticker, secdetails.security_name
+            having P12M_Return IS NOT NULL
+            AND P18M_Return IS NOT NULL
+            AND P24M_Return IS NOT NULL
+            AND ticker = 'SPY'
+            Order by P24M_Return DESC
+            ;
+            
+
+## SIGMA TABLE 
+/*
+Finally we create the sigma table by applying the standard deviation (stddev) function to the 
+ daily prices (250 days).
+*/
+
+CREATE VIEW invest.Team3_new_sigma_dd AS
+SELECT a.ticker, std(a.yearly_return) AS sigma
+FROM ( 
+SELECT *,lag(daily_returns, 250) OVER (partition by ticker order by date) AS yearly_return
+FROM invest.Team3_dailyreturns_dd
+) AS a
+GROUP by a.ticker
+;          
+
+## TABLE for all securites : Returns, Sigma, Risk Adjusted Returns and Tracking Error
+/*
+We gather all the data in the securities table (Returns and Sigma).
+We also calculated the risk adjusted returns (Returns/Sigma) as a measure of returns per unit of risk.
+Also we calculate the Tracking Error (te) with the formula (Sigma * (ROR Asset - ROR Benchmark))
+To measure how consistently close the assets track the benchmark.
+We are using these 2 measures to understand how correlated are our assets with the market and also to 
+ analyze which securities are performing better based on the amount of return per unit of risk.
+*/
+
+CREATE VIEW invest.Team3_new_Securities_data_dd AS
+SELECT r.ticker, r.security_name, FORMAT(r.P12M_Return,2) AS mu12m, FORMAT(r.P18M_Return,2) AS mu18m,  FORMAT(r.P24M_Return,2) AS mu24m,  FORMAT(s.sigma,2) AS sigma,
+FORMAT((r.P12M_Return/s.sigma),2) AS risk_adj_return , FORMAT(s.sigma*(r.P12M_Return - b.P12M_Return),2) AS te  
+FROM invest.Team3_pastreturns_dd as r
+INNER JOIN invest.Team3_new_sigma_dd AS s
+USING(ticker)
+JOIN invest.Team3_new_benchmark_dd AS b
+ORDER by ticker 
+;
+
+
+/*
+Finally we calculate the portfolio numbers for each selected clients and for each security inside 
+ their portfolio.
+*/
+
+-- ANALIZING CURRENT PORTFOLIO CLIENT 219 - ACCOUNT 788
+
+CREATE VIEW invest.Team3_new2_acc788_dd AS 
+SELECT hc.date, hc.account_id, hc.ticker,
+FORMAT(((hc.value * hc.quantity)/(SELECT sum(hc.value * hc.quantity)  FROM invest.holdings_current AS hc WHERE hc.account_id = 788))*100,2) AS 'weight',
+sm.major_asset_class, sm.minor_asset_class, sd.mu12m, sd.mu18m, sd.mu24m, sd.sigma, sd.risk_adj_return, sd.te
+FROM invest.holdings_current AS hc
+LEFT JOIN invest.security_masterlist AS sm
+USING (ticker)
+LEFT JOIN invest.Team3_new_Securities_data_dd AS sd
+USING(ticker)
+WHERE account_id = 788;
+
+
+/*
+For the total portfolio numbers we have to sumproduct the weights of each security times the 
+ return and the expected risk.
+*/
+
+SELECT * FROM invest.Team3_new2_acc788_dd
+UNION ALL 
+SELECT date, account_id, 'Total Portfolio', FORMAT(sum(weight),2) AS 'weight',
+'N/A', 'N/A', FORMAT(sum(weight * mu12m),2) AS expected_return_12m, FORMAT(sum(weight * mu18m),2) AS expected_return_18m, FORMAT(sum(weight * mu24m),2) AS expected_return_24m,
+FORMAT(sum(weight * sigma),2) AS expected_sigma, FORMAT(sum(weight * mu12m)/sum(weight * sigma),2) AS expected_risk_adj_return,
+FORMAT(sum(weight * te),2) AS expected_te
+FROM invest.Team3_new2_acc788_dd
+GROUP by date, account_id;
+
+
+/*
+Finally we sum the portfolio weight based on the major asset class to measure and analyze the 
+ risk of the customer portfolio.
+*/
+
+SELECT account_id, SUM(weight) AS sum_weight, major_asset_class
+FROM invest.Team3_new2_acc788_dd
+GROUP BY account_id, major_asset_class
+UNION ALL
+SELECT 'total', SUM(weight), 'N/A'
+FROM invest.Team3_new2_acc788_dd;
+
+/*
+We selected the top performing securities from the data based on the highest risk adjusted returns, 
+ making sure not to add securities from the same industries, so we can diversify the portfolio. 
+We used these new securities to replace the worst performers in each client portfolio, based on 
+ the adjusted risk return.
+*/
+
+/*
+The best 10 performing securites in our data
+*/
+
+SELECT *
+FROM invest.Team3_new_Securities_data_dd
+ORDER BY risk_adj_return ASC
+LIMIT 10
+;
+
+/*
+The worst performing securities from the client portfolio account #788
+*/
+
+SELECT *
+FROM invest.Team3_new2_acc788_dd
+WHERE risk_adj_return IS NOT NULL
+ORDER BY risk_adj_return ASC
+LIMIT 5;
+
+/*
+-- We remove the worst performers: 'VGSH', 'NFLX', 'EMB', 'VCSH' and replace them with 
+ our selection of securities of CF, DVN, MCK, DBC.
+*/
+
+SELECT ticker, mu12m, sigma, weight
+FROM invest.Team3_new2_acc788_dd
+WHERE ticker NOT IN ('VGSH', 'NFLX', 'EMB', 'VCSH')
+UNION ALL
+SELECT 'total', 'N/A', 'N/A', SUM(weight) as sum_weight
+FROM invest.Team3_new2_acc788_dd
+WHERE ticker NOT IN ('VGSH', 'NFLX', 'EMB', 'VCSH');
+
+-- 100-88.51 = 11.49/4 = 2.8725
+/*
+We create a new table that reflects the optimized portfolio with our recommended selection of securities.
+As we see above, the weight of the securities that we removed takes up to 11.49% of the overall portfolio of 
+ the client.
+Our job is to substitute this weight with the new securitiess. 
+For the purposes of this proposal, we divide the weight equally among the 4 newly inserted securities, 
+ giving a weight of 2.8725% for each security.
+*/
+
+CREATE VIEW invest.Team3_optimized_acc788_dd AS
+SELECT ticker, mu12m, sigma, weight
+FROM invest.Team3_new2_acc788_dd
+WHERE ticker NOT IN ('VGSH', 'NFLX', 'EMB', 'VCSH')
+UNION ALL
+SELECT ticker, mu12m, sigma, '2.8725'
+FROM invest.Team3_new_Securities_data_dd
+WHERE ticker IN ('CF', 'DVN', 'MCK', 'DBC');
+
+-- The result of the optimized porfolio.
+
+SELECT 'Total Portfolio', FORMAT(sum(weight * mu12m),2) AS expected_return_12m, FORMAT(sum(weight * sigma),2) AS expected_sigma, FORMAT(sum(weight),2) AS 'weight'
+FROM invest.Team3_optimized_acc788_dd;
+
+
+-- ANALIZING CURRENT PORTFOLIO CLIENT 286 - ACCOUNT 28601
+
+CREATE VIEW invest.Team3_new_acc286_dd AS 
+SELECT hc.date, hc.account_id, hc.ticker,
+FORMAT(((hc.value * hc.quantity)/(SELECT sum(hc.value * hc.quantity)  FROM invest.holdings_current AS hc WHERE hc.account_id = 286))*100,2) AS 'weight',
+sm.major_asset_class, sm.minor_asset_class, sd.mu12m, sd.mu18m, sd.mu24m, sd.sigma, sd.risk_adj_return, sd.te
+FROM invest.holdings_current AS hc
+LEFT JOIN invest.security_masterlist AS sm
+USING (ticker)
+LEFT JOIN invest.Team3_new_Securities_data_dd AS sd
+USING (ticker)
+WHERE account_id = 286;
+
+/*
+For the total portfolio numbers we have to sumproduct the weights of each security times 
+ the return and the expected risk.
+*/
+
+SELECT * FROM invest.Team3_new_acc286_dd
+UNION ALL 
+SELECT date, account_id, 'Total Portfolio', FORMAT(sum(weight),2) AS 'weight',
+'N/A', 'N/A', FORMAT(sum(weight * mu12m),2) AS expected_return_12m, FORMAT(sum(weight * mu18m),2) AS expected_return_18m, FORMAT(sum(weight * mu24m),2) AS expected_return_24m,
+FORMAT(sum(weight * sigma),2) AS expected_sigma, FORMAT(sum(weight * mu12m)/sum(weight * sigma),2) AS expected_risk_adj_return,
+FORMAT(sum(weight * te),2) AS expected_te
+FROM invest.Team3_new_acc286_dd
+GROUP by date, account_id;
+
+/*
+Finally we sum the portfolio weight based on the major asset class to measure and analyze 
+ the risk of the customer portfolio.
+*/
+
+SELECT account_id, SUM(weight) AS sum_weight, major_asset_class
+FROM invest.Team3_new_acc286_dd
+GROUP BY account_id, major_asset_class
+UNION ALL
+SELECT 'total', SUM(weight), 'N/A'
+FROM invest.Team3_new_acc286_dd;
+
+/*
+We selected the top performing securities from the data based on the highest risk adjusted returns, 
+ making sure not to add securities from the same industries, so we can diversify the portfolio. 
+We used these new securities to replace the worst performers in each client portfolio, based on 
+ the adjusted risk return.
+*/
+
+/*
+The worst performing securities from the client
+*/
+
+SELECT *
+FROM invest.Team3_new_acc286_dd
+WHERE risk_adj_return IS NOT NULL
+ORDER BY risk_adj_return ASC
+LIMIT 5;
+
+/*
+-- We remove the worst performers: 'TTWO', 'LEN', 'BSV', 'MAA' and replace them with our 
+ selection of securities of CF, DVN, MCK, DBC.
+*/
+
+SELECT ticker, mu12m, sigma, weight
+FROM invest.Team3_new_acc286_dd
+WHERE ticker NOT IN ('TTWO', 'LEN', 'BSV', 'MAA')
+UNION ALL
+SELECT 'total', 'N/A', 'N/A', SUM(weight) as sum_weight
+FROM invest.Team3_new_acc286_dd
+WHERE ticker NOT IN ('TTWO', 'LEN', 'BSV', 'MAA');
+
+-- 100-38.32 = 61.68/4 = 15.42
+/*
+We create a new table that reflects the optimized portfolio with our recommended selection of securities.
+As we see above, the weight of the securities that we removed takes up to 61.68% of the overall portfolio of 
+ the client.
+Our job is to substitute this weight with the new securitiess. 
+For the purposes of this proposal, we divide the weight equally among the 4 newly inserted securities, 
+ giving a weight of 15.42% for each security.
+*/
+
+CREATE VIEW invest.Team3_optimized_acc286_dd AS
+SELECT ticker, mu12m, sigma, weight
+FROM invest.Team3_new_acc286_dd
+WHERE ticker NOT IN ('TTWO', 'LEN', 'BSV', 'MAA')
+UNION ALL
+SELECT ticker, mu12m, sigma, '0.610025'
+FROM invest.Team3_new_Securities_data_dd
+WHERE ticker IN ('CF', 'DVN', 'MCK', 'DBC');
+
+-- The result of the optimized porfolio.
+
+SELECT 'Total Portfolio', FORMAT(sum(weight * mu12m),2) AS expected_return_12m, FORMAT(sum(weight * sigma),2) AS expected_sigma, FORMAT(sum(weight),2) AS 'weight'
+FROM invest.Team3_optimized_acc286_dd;
+
+
+-- ANALIZING CURRENT PORTFOLIO CLIENT 286 - ACCOUNT 28601
+
+CREATE VIEW invest.Team3_acc28601_dd AS 
+SELECT hc.date, hc.account_id, hc.ticker,
+FORMAT(((hc.value * hc.quantity)/(SELECT sum(hc.value * hc.quantity)  FROM invest.holdings_current AS hc WHERE hc.account_id = 28601))*100,2) AS 'weight',
+sm.major_asset_class, sm.minor_asset_class, sd.mu12m, sd.mu18m, sd.mu24m, sd.sigma, sd.risk_adj_return, sd.te
+FROM invest.holdings_current AS hc
+LEFT JOIN invest.security_masterlist AS sm
+USING (ticker)
+LEFT JOIN invest.Team3_new_Securities_data_dd AS sd
+USING(ticker)
+WHERE account_id = 28601;
+
+/*
+For the total portfolio numbers we have to sumproduct the weights of each security times the 
+ return and the expected risk.
+*/
+
+SELECT * FROM invest.Team3_acc28601_dd
+UNION ALL 
+SELECT date, account_id, 'Total Portfolio', FORMAT(sum(weight),2) AS 'weight',
+'N/A', 'N/A', FORMAT(sum(weight * mu12m),2) AS expected_return_12m, FORMAT(sum(weight * mu18m),2) AS expected_return_18m, FORMAT(sum(weight * mu24m),2) AS expected_return_24m,
+FORMAT(sum(weight * sigma),2) AS expected_sigma, FORMAT(sum(weight * mu12m)/sum(weight * sigma),2) AS expected_risk_adj_return,
+FORMAT(sum(weight * te),2) AS expected_te
+FROM invest.Team3_acc28601_dd
+GROUP by date, account_id;
+
+/*
+Finally we sum the portfolio weight based on the major asset class to measure and analyze 
+ the risk of the customer portfolio.
+*/
+
+SELECT account_id, SUM(weight) AS sum_weight, major_asset_class
+FROM invest.Team3_acc28601_dd
+GROUP BY account_id, major_asset_class
+UNION ALL
+SELECT 'total', SUM(weight), 'N/A'
+FROM invest.Team3_acc28601_dd;
+
+
+/*
+We selected the top performing securities from the data based on the highest risk adjusted returns, 
+ making sure not to add securities from the same industries, so we can diversify the portfolio. 
+We used these new securities to replace the worst performers in each client portfolio, based on 
+ the adjusted risk return.
+*/
+
+/*
+The worst performing securities from the client
+*/
+
+SELECT *
+FROM invest.Team3_acc28601_dd
+WHERE risk_adj_return IS NOT NULL
+ORDER BY risk_adj_return ASC
+LIMIT 5;
+
+/*
+-- We remove the worst performers: ''MBB', 'BNDX', 'YOLO', 'CNBS' and replace them with our 
+ selection of securities of CF, DVN, MCK, DBC.
+*/
+
+SELECT ticker, mu12m, sigma, weight
+FROM invest.Team3_acc28601_dd
+WHERE ticker NOT IN ('MBB', 'BNDX', 'YOLO', 'CNBS')
+UNION ALL
+SELECT 'total', 'N/A', 'N/A', SUM(weight) as sum_weight
+FROM invest.Team3_acc28601_dd
+WHERE ticker NOT IN ('MBB', 'BNDX', 'YOLO', 'CNBS');
+
+-- 100-97.5599 = 2.4401/4 = 0.610025
+/*
+We create a new table that reflects the optimized portfolio with our recommended selection of securities.
+As we see above, the weight of the securities that we removed takes up to 2.4401% of the overall portfolio of 
+ the client.
+Our job is to substitute this weight with the new securitiess. 
+For the purposes of this proposal, we divide the weight equally among the 4 newly inserted securities, 
+ giving a weight of 0.610025% for each security.
+*/
+
+CREATE VIEW invest.Team3_optimized_acc28601_dd AS
+SELECT ticker, mu12m, sigma, weight
+FROM invest.Team3_acc28601_dd
+WHERE ticker NOT IN ('MBB', 'BNDX', 'YOLO', 'CNBS')
+UNION ALL
+SELECT ticker, mu12m, sigma, '0.610025'
+FROM invest.Team3_new_Securities_data_dd
+WHERE ticker IN ('CF', 'DVN', 'MCK', 'DBC');
+
+-- The result of the optimized porfolio.
+
+SELECT 'Total Portfolio', FORMAT(sum(weight * mu12m),2) AS expected_return_12m, FORMAT(sum(weight * sigma),2) AS expected_sigma, FORMAT(sum(weight),2) AS 'weight'
+FROM invest.Team3_optimized_acc28601_dd;
+
+-- ANALIZING CURRENT PORTFOLIO CLIENT 128 - ACCOUNT 160
+
+CREATE VIEW invest.Team3_acc160_dd AS 
+SELECT hc.date, hc.account_id, hc.ticker,
+FORMAT(((hc.value * hc.quantity)/(SELECT sum(hc.value * hc.quantity)  FROM invest.holdings_current AS hc WHERE hc.account_id = 160))*100,2) AS 'weight',
+sm.major_asset_class, sm.minor_asset_class, sd.mu12m, sd.mu18m, sd.mu24m, sd.sigma, sd.risk_adj_return, sd.te
+FROM invest.holdings_current AS hc
+LEFT JOIN invest.security_masterlist AS sm
+USING (ticker)
+LEFT JOIN invest.Team3_new_Securities_data_dd AS sd
+USING(ticker)
+WHERE account_id = 160;
+
+/*
+For the total portfolio numbers we have to sumproduct the weights of each security times the 
+ return and the expected risk.
+*/
+
+SELECT * FROM invest.Team3_acc160_dd
+UNION ALL 
+SELECT date, account_id, 'Total Portfolio', FORMAT(sum(weight),2) AS 'weight',
+'N/A', 'N/A', FORMAT(sum(weight * mu12m),2) AS expected_return_12m, FORMAT(sum(weight * mu18m),2) AS expected_return_18m, FORMAT(sum(weight * mu24m),2) AS expected_return_24m,
+FORMAT(sum(weight * sigma),2) AS expected_sigma, FORMAT(sum(weight * mu12m)/sum(weight * sigma),2) AS expected_risk_adj_return,
+FORMAT(sum(weight * te),2) AS expected_te
+FROM invest.Team3_acc160_dd
+GROUP by date, account_id;
+
+/*
+Finally we sum the portfolio weight based on the major asset class to measure and analyze the 
+ risk of the customer portfolio.
+*/
+
+SELECT account_id, SUM(weight) AS sum_weight, major_asset_class
+FROM invest.Team3_acc160_dd
+GROUP BY account_id, major_asset_class
+UNION ALL
+SELECT 'total', SUM(weight), 'N/A'
+FROM invest.Team3_acc160_dd;
+
+
+/*
+We selected the top performing securities from the data based on the highest risk adjusted returns, 
+ making sure not to add securities from the same industries, so we can diversify the portfolio. 
+We used these new securities to replace the worst performers in each client portfolio, based on 
+ the adjusted risk return.
+*/
+
+/*
+The worst performing securities from the client
+*/
+
+SELECT *
+FROM invest.Team3_acc160_dd
+WHERE risk_adj_return IS NOT NULL
+ORDER BY risk_adj_return ASC
+LIMIT 5;
+
+/*
+-- We remove the worst performers: 'GOOGL','ROK', 'BIDU' and replace them with our 
+ selection of securities of CF, DVN, MCK, DBC.
+*/
+
+SELECT ticker, mu12m, sigma, weight
+FROM invest.Team3_acc160_dd
+WHERE ticker NOT IN ('GOOGL','ROK', 'BIDU')
+UNION ALL
+SELECT 'total', 'N/A', 'N/A', SUM(weight) as sum_weight
+FROM invest.Team3_acc160_dd
+WHERE ticker NOT IN ('GOOGL','ROK', 'BIDU');
+
+-- 100-43.69 = 56.31/4 = 14.0775
+
+/*
+We create a new table that reflects the optimized portfolio with our recommended selection of securities.
+As we see above, the weight of the securities that we removed takes up to 56.31% of the overall portfolio of 
+ the client.
+Our job is to substitute this weight with the new securitiess. 
+For the purposes of this proposal, we divide the weight equally among the 4 newly inserted securities, 
+ giving a weight of 14.0775% for each security.
+*/
+
+CREATE VIEW invest.Team3_optimized_acc160_dd AS
+SELECT ticker, mu12m, sigma, weight
+FROM invest.Team3_acc160_dd
+WHERE ticker NOT IN ('GOOGL','ROK', 'BIDU')
+UNION ALL
+SELECT ticker, mu12m, sigma, '14.0775'
+FROM invest.Team3_new_Securities_data_dd
+WHERE ticker IN ('CF', 'DVN', 'MCK', 'DBC');
+
+-- The result of the optimized porfolio.
+
+SELECT 'Total Portfolio', FORMAT(sum(weight * mu12m),2) AS expected_return_12m, FORMAT(sum(weight * sigma),2) AS expected_sigma, FORMAT(sum(weight),2) AS 'weight'
+FROM invest.Team3_optimized_acc160_dd;
+
+
+
+-- ANALIZING CURRENT PORTFOLIO CLIENT 128 - ACCOUNT 16001
+
+CREATE VIEW invest.Team3_acc16001_dd AS 
+SELECT hc.date, hc.account_id, hc.ticker,
+FORMAT(((hc.value * hc.quantity)/(SELECT sum(hc.value * hc.quantity)  FROM invest.holdings_current AS hc WHERE hc.account_id = 16001))*100,2) AS 'weight',
+sm.major_asset_class, sm.minor_asset_class, sd.mu12m, sd.mu18m, sd.mu24m, sd.sigma, sd.risk_adj_return, sd.te
+FROM invest.holdings_current AS hc
+LEFT JOIN invest.security_masterlist AS sm
+USING (ticker)
+LEFT JOIN invest.Team3_new_Securities_data_dd AS sd
+USING(ticker)
+WHERE account_id = 16001;
+
+/*
+For the total portfolio numbers we have to sumproduct the weights of each security times the 
+ return and the expected risk.
+*/
+
+SELECT * FROM invest.Team3_acc16001_dd
+UNION ALL 
+SELECT date, account_id, 'Total Portfolio', FORMAT(sum(weight),2) AS 'weight',
+'N/A', 'N/A', FORMAT(sum(weight * mu12m),2) AS expected_return_12m, FORMAT(sum(weight * mu18m),2) AS expected_return_18m, FORMAT(sum(weight * mu24m),2) AS expected_return_24m,
+FORMAT(sum(weight * sigma),2) AS expected_sigma, FORMAT(sum(weight * mu12m)/sum(weight * sigma),2) AS expected_risk_adj_return,
+FORMAT(sum(weight * te),2) AS expected_te
+FROM invest.Team3_acc16001_dd
+GROUP by date, account_id;
+
+/*
+Finally we sum the portfolio weight based on the major asset class to measure and analyze the 
+ risk of the customer portfolio.
+*/
+
+SELECT account_id, SUM(weight) AS sum_weight, major_asset_class
+FROM invest.Team3_acc16001_dd
+GROUP BY account_id, major_asset_class
+UNION ALL
+SELECT 'total', SUM(weight), 'N/A'
+FROM invest.Team3_acc16001_dd;
+
+/*
+We selected the top performing securities from the data based on the highest risk adjusted returns, 
+ making sure not to add securities from the same industries, so we can diversify the portfolio. 
+We used these new securities to replace the worst performers in each client portfolio, based on 
+ the adjusted risk return.
+*/
+
+/*
+The worst performing securities from the client
+*/
+
+SELECT *
+FROM invest.Team3_acc16001_dd
+WHERE risk_adj_return IS NOT NULL
+ORDER BY risk_adj_return ASC
+LIMIT 5;
+
+/*
+-- We remove the worst performers 'BNDX', 'DIS', 'GIGB', 'OTIS' and replace them with our 
+ selection of securities of CF, DVN, MCK, DBC.
+*/
+
+SELECT ticker, mu12m, sigma, weight
+FROM invest.Team3_acc16001_dd
+WHERE ticker NOT IN ('BNDX', 'DIS', 'GIGB', 'OTIS')
+UNION ALL
+SELECT 'total', 'N/A', 'N/A', SUM(weight) as sum_weight
+FROM invest.Team3_acc16001_dd
+WHERE ticker NOT IN ('BNDX', 'DIS', 'GIGB', 'OTIS');
+
+-- 100-71.95 = 28.05/4 = 7.0125
+
+/*
+We create a new table that reflects the optimized portfolio with our recommended selection of securities.
+As we see above, the weight of the securities that we removed takes up to 28.05% of the overall portfolio of 
+ the client.
+Our job is to substitute this weight with the new securities. 
+For the purposes of this proposal, we divide the weight equally among the 4 newly inserted securities, 
+ giving a weight of 7.0125% for each security.
+*/
+
+CREATE VIEW invest.Team3_optimized_acc16001_dd AS
+SELECT ticker, mu12m, sigma, weight
+FROM invest.Team3_acc16001_dd
+WHERE ticker NOT IN ('BNDX', 'DIS', 'GIGB', 'OTIS')
+UNION ALL
+SELECT ticker, mu12m, sigma, '7.0125'
+FROM invest.Team3_new_Securities_data_dd
+WHERE ticker IN ('CF', 'DVN', 'MCK', 'DBC');
+
+-- The result of the optimized porfolio.
+
+SELECT 'Total Portfolio', FORMAT(sum(weight * mu12m),2) AS expected_return_12m, FORMAT(sum(weight * sigma),2) AS expected_sigma, FORMAT(sum(weight),2) AS 'weight'
+FROM invest.Team3_optimized_acc16001_dd;
+
+
