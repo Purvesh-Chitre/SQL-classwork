@@ -1,3 +1,6 @@
+Business Challenge 1
+Team: Franco, Naya, Carla and Purvesh
+
 USE invest;
 
 /*
