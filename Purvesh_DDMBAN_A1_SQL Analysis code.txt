@@ -1,0 +1,59 @@
+-- using the required schema to access the ddmban_data database
+
+USE ddmban_sql_analysis;
+
+-- we use temporary tables to get the final result in the tables we want by using with statement
+
+WITH `analysis1` AS(
+		   SELECT ID, category, subcategory, product,  
+                 (CASE WHEN (organic + wholefoodsdiet) >= 1 THEN 1 -- where products are at lease wholefoods or organic or both = 1 else 0
+			      ELSE 0 END) AS wholefoodsdiet_organic, 
+                 (CASE WHEN ID BETWEEN 1 AND 219 THEN price/100 
+                  WHEN ID = 167 THEN price/10000 -- outlier in price, correction done
+                  WHEN ID > 219 THEN price END) AS price_$
+FROM   ddmban_data
+WHERE  price IS NOT NULL), -- eliminate null priced products
+     `analysis2` AS (
+		   SELECT ID, category, subcategory, product, wholefoodsdiet_organic, price_$
+           FROM   `analysis1`
+           WHERE  price_$ IS NOT NULL),
+           `wholefoodsorganic`    AS (SELECT * 
+                                      FROM   `analysis2` 
+                                      WHERE  wholefoodsdiet_organic = 1),
+           `wholefoodsnotorganic` AS (SELECT * 
+                                      FROM   `analysis2` 
+                                      WHERE  wholefoodsdiet_organic = 0),
+			`avg_wo_yes`          AS (SELECT   ROUND(AVG(price_$), 2) AS wo_avg_price_$, category -- average prices where products wholefoodsdiet and organic
+                                      FROM     `wholefoodsorganic`
+							          GROUP BY category),
+			`avg_wno_yes`         AS (SELECT   ROUND(AVG(price_$), 2) AS wno_avg_price_$, category -- average prices where products noe organic and wholefoodsdiet
+                                      FROM     `wholefoodsnotorganic`
+							          GROUP BY category),
+                                      
+          -- creating data for degree of freedom calculation
+          
+	 samp1 AS (
+               SELECT COUNT(price) AS sample_a, category 
+               FROM   ddmban_data
+               WHERE  organic = 1 
+                 AND  wholefoodsdiet = 1
+                 AND  price IS NOT NULL
+			   GROUP BY category),
+     samp2 AS (SELECT COUNT(price) AS sample_b, category
+               FROM   ddmban_data
+               WHERE  organic = 0 
+               AND    wholefoodsdiet = 0
+               AND    price IS NOT NULL
+               GROUP BY category)
+               
+               -- joining the temporary tables to get the required output table
+               
+			SELECT    category, wo_avg_price_$, wno_avg_price_$, (sample_a + sample_b - 2) AS deg_freedom
+            FROM      `avg_wo_yes`
+            LEFT JOIN `avg_wno_yes`
+            USING     (category)
+            LEFT JOIN samp1
+            USING     (category)
+            LEFT JOIN samp2
+            USING     (category)
+            ;
